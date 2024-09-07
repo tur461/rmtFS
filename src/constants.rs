@@ -27,14 +27,25 @@ pub const EMPTY: &str = "";
 // ignore routes
 pub const IGNORE_ROUTES: [&str; 2] = ["/login", "/register"];
 
-// Default number of items per page
-pub const DEFAULT_PER_PAGE: i64 = 10;
+// dirctories
+pub const PATH_TO_FILES: &str = "./src/files/";
+pub const DEF_THUMB_DIR: &str = "./src/files/def_thumbs/";
 
-// Default page number
-pub const DEFAULT_PAGE_NUM: i64 = 1;
+pub const MIME_PDF: &str = "application/pdf";
+pub const MIME_XCL: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+pub const MIME_PPT: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+pub const MIME_JPG: &str = "image/jpeg";
+pub const MIME_PNG: &str = "image/png";
+pub const MIME_TXT: &str = "text/plain";
+pub const MIME_EXE: &str = "application/vnd.microsoft.portable-executable";
+pub const MIME_ELF: &str = "application/x-elf";
+pub const MIME_MCO: &str = "application/x-mach-o";
+pub const MIME_DOC: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-pub const EMPTY_STR: &str = "";
+// use bin.png for these
+pub const MIME_OLE: &str = "application/x-ole-storage";
 
-//Session key
-pub const SESSION_SERVER_PUBLIC_KEY: &str = "spk";
-pub const SESSION_CLIENT_PUBLIC_KEY: &str = "cpk";
+// archives -- arc.png
+pub const MIME_DEB: &str = "application/vnd.debian.binary-package";
+pub const MIME_UAR: &str = "application/x-unix-archive";
+

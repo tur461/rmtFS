@@ -22,6 +22,13 @@ actix-web-httpauth = "0.7"
 env_logger = "0.11"
 log = "0.4"
 actix-cors = "0.7.0"
+actix-multipart = "0.7.2"
+futures-util = "0.3"
+infer = "0.16.0"
+base64 = "0.22.1"
+sysinfo = "0.31"
+mime_guess = "2.0"
+actix-files = "0.6"
 
 [dependencies.chrono]
 version = "0.4.26"

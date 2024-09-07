@@ -1,11 +1,15 @@
 mod apis;
 
 mod jwt;
+mod utils;
 mod models;
 mod constants;
 
+#[cfg(test)]
+mod apis_mock;
+
 use std::sync::{Arc, Mutex};
-use actix_web::{web, App, HttpServer, HttpResponse, Responder};
+use actix_web::{web, App, HttpServer, HttpResponse, Responder, http::header};
 use apis::{
     login, 
     register, 
@@ -61,6 +65,7 @@ async fn main() -> std::io::Result<()> {
                     .allow_any_origin()
                     .allow_any_method()
                     .allow_any_header()
+                    .expose_headers(vec![header::CONTENT_DISPOSITION])
                     .supports_credentials()
                     .max_age(3600),
             )
@@ -72,7 +77,7 @@ async fn main() -> std::io::Result<()> {
             .route("/files/get_one_by_fid/{id}", web::get().to(get_file_by_id))
             .route("/files/cre_by_uid/{id}", web::post().to(create_file))
             .route("/files/up_by_fid/{id}", web::put().to(update_file))
-            .route("/files/del_by_fid/{id}", web::delete().to(delete_file))
+            .route("/files/del_by_compid/{id}", web::delete().to(delete_file))
     })
     .bind("127.0.0.1:8080")?
     .run()

@@ -30,6 +30,7 @@ pub async fn initialize_db(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             filename TEXT NOT NULL,
             size INTEGER NOT NULL,
             filepath TEXT NOT NULL,
+            thumbnail TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )"
     )

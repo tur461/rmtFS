@@ -1,6 +1,8 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use actix_multipart::Multipart;
 
 use bcrypt::{hash, verify, DEFAULT_COST};
 use crate::jwt::create_jwt;
@@ -15,9 +17,12 @@ use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::fs;
 use log::error;
-
-const PATH_TO_FILES: &str = "./src/files/";
-
+use std::io::Write;
+use actix_files::NamedFile;
+use crate::constants::PATH_TO_FILES;
+use base64::{encode as base64_encode};
+use crate::utils::{detect_file_type, get_thumb_path};
+use futures_util::TryStreamExt as _;
 
 #[derive(Deserialize)]
 pub struct UserLogin {
@@ -32,14 +37,6 @@ pub struct RegisterRequest {
     allocated_space: usize, // Space in MB
 }
 
-
-#[derive(Deserialize)]
-struct FileUpload {
-    filename: String,
-    size: usize, // File size in MB
-}
-
-
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct File {
     pub id: String,
@@ -47,6 +44,7 @@ pub struct File {
     pub filename: String,
     pub filepath: String,
     pub size: usize,
+    thumbnail: Option<String>
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -119,7 +117,7 @@ pub async fn get_files(
     pool: web::Data<SqlitePool>,
     user_id: web::Path<String>
 ) -> impl Responder {
-    let rows = sqlx::query("SELECT id, user_id, filename, filepath, size FROM files WHERE user_id = ?")
+    let rows = sqlx::query("SELECT id, user_id, filename, filepath, size, thumbnail FROM files WHERE user_id = ?")
         .bind(user_id.to_string())
         .fetch_all(pool.get_ref())
         .await;
@@ -127,12 +125,29 @@ pub async fn get_files(
     match rows {
         Ok(files) => {
             let files: Vec<File> = files.into_iter().map(|row| {
+                let id: String = row.try_get("id").unwrap();
+                let user_id: String = row.try_get("user_id").unwrap();
+                let filename: String = row.try_get("filename").unwrap();
+                let filepath: String = row.try_get("filepath").unwrap();
+                let size: usize = row.get::<i32, _>("size") as usize;
+                let thumb_path: String = row.try_get("thumbnail").unwrap();
+
+                let thumb_data = if std::path::Path::new(&thumb_path).exists() {
+                    match fs::read(&thumb_path) {
+                        Ok(data) => Some(base64_encode(data)),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+
                 File {
-                    id: row.try_get("id").unwrap(),
-                    user_id: row.try_get("user_id").unwrap(),
-                    filename: row.try_get("filename").unwrap(),
-                    filepath: row.try_get("filepath").unwrap(),
-                    size: row.get::<i32, _>("size") as usize,
+                    id,
+                    user_id,
+                    filename,
+                    filepath,
+                    size,
+                    thumbnail: thumb_data,
                 }
             }).collect();
 
@@ -147,67 +162,104 @@ pub async fn get_files(
 
 pub async fn get_file_by_id(
     pool: web::Data<SqlitePool>, 
-    id: web::Path<String>
+    file_id: web::Path<String>,
+    req: HttpRequest
 ) -> impl Responder {
-    let file = sqlx::query("SELECT id, filename, filepath, size FROM files WHERE id = ?")
-        .bind(id.into_inner())
+    let f_res = sqlx::query("SELECT id, filename, filepath, size FROM files WHERE id = ?")
+        .bind(file_id.into_inner())
         .fetch_optional(pool.get_ref())
         .await;
 
-    match file {
-        Ok(Some(file)) => {
-            let filepath: String = file.try_get("filepath").unwrap();
-            match fs::read(&filepath) {
-                Ok(content) => HttpResponse::Ok().body(content),
-                Err(_) => HttpResponse::InternalServerError().body("Error reading file from disk"),
+        match f_res {
+            Ok(Some(file)) => {
+                let filepath: String = file.try_get("filepath").unwrap();
+                let filename: String = file.try_get("filename").unwrap();
+                
+                if !std::path::Path::new(&filepath).exists() {
+                    return HttpResponse::NotFound().body("File not found on disk");
+                }
+
+                log::info!("## Reading file: {}", filepath);
+                
+                match NamedFile::open(filepath) {
+                    Ok(named_file) => {
+                        named_file
+                            .use_last_modified(true)
+                            .set_content_disposition(
+                                actix_web::http::header::ContentDisposition {
+                                    disposition: actix_web::http::header::DispositionType::Attachment,
+                                    parameters: vec![
+                                        actix_web::http::header::DispositionParam::Filename(filename)
+                                    ]
+                                }
+                            )
+                            .into_response(&req)
+                    }
+                    Err(_) => HttpResponse::InternalServerError().body("Error opening file"),
+                }
             }
+            Ok(None) => HttpResponse::NotFound().body("File not found"),
+            Err(_) => HttpResponse::InternalServerError().body("Error fetching the file"),
         }
-        Ok(None) => HttpResponse::NotFound().body("File not found"),
-        Err(_) => HttpResponse::InternalServerError().body("Error fetching file"),
-    }
 }
+
 
 pub async fn create_file(
     pool: web::Data<SqlitePool>, 
-    file_data: web::Json<FileReq>, 
+    mut payload: Multipart, 
     user_id: web::Path<String>
 ) -> impl Responder {
     let user = get_user_by_id(&pool, &user_id).await;
     if user.is_err() {
-        return HttpResponse::InternalServerError().body("user not found!.");
+        return HttpResponse::InternalServerError().body("User not found.");
     }
     let user = user.unwrap();
     let (allocated_space, used_space) = (user.allocated_space, user.used_space);
-    
-    let size = file_data.content.len();    
-    let file_size = size;
+
+    let mut filepath = String::new();
+    let mut filename = String::new();
+    let mut file_size: usize = 0;
+
+    while let Ok(Some(mut field)) = payload.try_next().await {
+        let content_disposition = field.content_disposition().unwrap();
+        filename = content_disposition.get_filename().unwrap().to_string();
+        let file_id = Uuid::new_v4().to_string();
+        log::info!("## GOT a file: {}", filename);
+
+        let user_dir = format!("{}/{}", PATH_TO_FILES, user_id);
+        if !std::path::Path::new(&user_dir).exists() {
+            fs::create_dir_all(&user_dir).unwrap();
+        }
+
+        filepath = format!("{}/{}", user_dir, filename);
+        let fp = filepath.clone();
+        let mut f = web::block(move || std::fs::File::create(&fp)).await.unwrap().unwrap();
+        log::info!("## Field: {} {:?} {}", field.size_hint().0, field.size_hint().1, field.name().unwrap());
+
+        while let Some(chunk) = field.try_next().await.unwrap() {
+            log::info!("## Chunk: {:?}", chunk.len());
+            file_size += chunk.len();
+            f = web::block(move || f.write_all(&chunk).map(|_| f)).await.unwrap().unwrap();
+        }
+
+
+    }
+
     if used_space + file_size > allocated_space {
-        return HttpResponse::BadRequest().body("Not enough space allocated");
+        fs::remove_file(filepath).unwrap(); // rm file if space is insufficient
+        return HttpResponse::BadRequest().body("File too big: out of space");
     }
 
-    let new_file = file_data.into_inner();
+    let file_type = detect_file_type(&filepath);
+    let thumb_path = get_thumb_path(file_type);
 
-    // here check if there is a directory under PATH_TO_FILE with name user_id
-    // if not create it
-    let uid = ""; // for now it is empty, else it'll be user_id
-
-    let filepath = format!("{}{}{}", PATH_TO_FILES, uid, new_file.filename); // Adjust this path
-    let file_id = Uuid::new_v4().to_string();
-    
-    match fs::write(&filepath, "default content") { // Replace with actual file content
-        Ok(_) => (),
-        Err(e) => {
-            error!("FS ERROR: {}", e);
-            return HttpResponse::InternalServerError().body("Error saving file to disk")
-        },
-    }
-
-    let result = sqlx::query("INSERT INTO files (id, user_id, filename, filepath, size) VALUES (?, ?, ?, ?, ?)")
-        .bind(&file_id)
+    let result = sqlx::query("INSERT INTO files (id, user_id, filename, filepath, size, thumbnail) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(&Uuid::new_v4().to_string())
         .bind(user_id.to_string())
-        .bind(&new_file.filename)
+        .bind(&filename)
         .bind(&filepath)
         .bind(file_size.to_string())
+        .bind(thumb_path)
         .execute(pool.get_ref())
         .await;
 
@@ -218,9 +270,12 @@ pub async fn create_file(
                 return HttpResponse::InternalServerError().body("Error updating user space");
             }
 
-            HttpResponse::Created().json("File created successfully")
+            HttpResponse::Created().json("File uploaded successfully")
         }
-        Err(_) => HttpResponse::InternalServerError().body("Error saving file metadata"),
+        Err(_) => {
+            fs::remove_file(filepath).unwrap(); // rm file if DB insertion fails
+            HttpResponse::InternalServerError().body("Error saving file metadata")
+        }
     }
 }
 
@@ -253,16 +308,23 @@ pub async fn update_file(
 
 pub async fn delete_file(
     pool: web::Data<SqlitePool>, 
-    id: web::Path<String>,
-    user_id: web::Path<String> 
+    f_u_id: web::Path<String>,
 ) -> impl Responder {
-    let user = get_user_by_username(&pool, &user_id).await;
+    let fuid = f_u_id.into_inner();
+    log::info!("## Deleting file: {}", fuid);
+    let splits = fuid.split("__").collect::<Vec<&str>>();
+    if splits.len() != 2 {
+        return HttpResponse::InternalServerError().body("Invalid ID compound!.");
+    }
+    let user_id = splits.get(0).unwrap();
+    let file_id = splits.get(1).unwrap();
+    
+    let user = get_user_by_id(&pool, &user_id).await;
     if user.is_err() {
         return HttpResponse::InternalServerError().body("user not found!.");
     }
     let user = user.unwrap();
-
-    let file_id = id.into_inner();
+    
 
     let file_row = sqlx::query("SELECT filepath, size FROM files WHERE id = ?")
         .bind(&file_id)
@@ -300,304 +362,3 @@ pub async fn delete_file(
         Err(_) => HttpResponse::InternalServerError().body("Error fetching file"),
     }
 }
-
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use actix_web::{test, App, web};
-    use serde_json::json;
-    use sqlx::SqlitePool;
-    use crate::{register, login, get_files, get_file_by_id, create_file, update_file, delete_file};
-    
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-    
-        sqlx::query(
-            "CREATE TABLE users (
-                id TEXT PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                allocated_space INTEGER,
-                used_space INTEGER
-            );"
-        ).execute(&pool).await.unwrap();
-    
-        sqlx::query(
-            "CREATE TABLE files (
-                id TEXT PRIMARY KEY,
-                user_id TEXT,
-                filename TEXT,
-                filepath TEXT,
-                size INTEGER,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );"
-        ).execute(&pool).await.unwrap();
-    
-        pool
-    }
-    
-    fn get_mock_token(user_id: &str) -> String {
-        format!("Bearer mocktoken_{}", user_id)
-    }
-    
-    #[actix_rt::test]
-    async fn test_register() {
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .service(web::resource("/register").route(web::post().to(register)))
-        ).await;
-    
-        let payload = json!({
-            "username": "testuser",
-            "password": "password123",
-            "allocated_space": 100
-        });
-    
-        let req = test::TestRequest::post()
-            .uri("/register")
-            .set_json(&payload)
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 200);
-    
-        let user_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM users WHERE username = ?")
-            .bind("testuser")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert!(user_exists);
-    }
-    
-    #[actix_rt::test]
-    async fn test_login() {
-        let jwt_secret = "test_secret".to_string();
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .app_data(web::Data::new(jwt_secret.clone()))
-                .service(web::resource("/login").route(web::post().to(login)))
-        ).await;
-    
-        // First, insert a user into the database.
-        let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, allocated_space, used_space)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("user_1")
-        .bind("testuser")
-        .bind(password_hash)
-        .bind(100)
-        .bind(0)
-        .execute(&pool).await.unwrap();
-    
-        let payload = json!({
-            "username": "testuser",
-            "password": "password123"
-        });
-    
-        let req = test::TestRequest::post()
-            .uri("/login")
-            .set_json(&payload)
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 200);
-    }
-    
-    #[actix_rt::test]
-    async fn test_upload_file_success() {
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .service(web::resource("/upload").route(web::post().to(upload_file)))
-        ).await;
-    
-        // Insert user into the database
-        let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, allocated_space, used_space)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("user_1")
-        .bind("testuser")
-        .bind(password_hash)
-        .bind(100)
-        .bind(0)
-        .execute(&pool).await.unwrap();
-    
-        // Mock file upload payload
-        let payload = json!({
-            "filename": "testfile.txt",
-            "size": 10 // Size in MB
-        });
-    
-        let req = test::TestRequest::post()
-            .uri("/upload")
-            .set_json(&payload)
-            .insert_header(("Authorization", get_mock_token("user_1")))
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 200);
-    }
-    
-    #[actix_rt::test]
-    async fn test_upload_file_insufficient_space() {
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .service(web::resource("/upload").route(web::post().to(upload_file)))
-        ).await;
-    
-        // Insert user with low allocated space
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, allocated_space, used_space)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("user_2")
-        .bind("testuser2")
-        .bind(bcrypt::hash("password123", bcrypt::DEFAULT_COST).unwrap())
-        .bind(5) // Only 5 MB of space allocated
-        .bind(0)
-        .execute(&pool).await.unwrap();
-    
-        let payload = json!({
-            "filename": "testfile_large.txt",
-            "size": 10 // Exceeds allocated space
-        });
-    
-        let req = test::TestRequest::post()
-            .uri("/upload")
-            .set_json(&payload)
-            .insert_header(("Authorization", get_mock_token("user_2")))
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 400); // Not enough space
-    }
-    
-    #[actix_rt::test]
-    async fn test_get_files_success() {
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .service(web::resource("/files").route(web::get().to(get_files)))
-        ).await;
-    
-        // Insert user and a file
-        let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST).unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, allocated_space, used_space)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("user_1")
-        .bind("testuser")
-        .bind(password_hash)
-        .bind(100)
-        .bind(0)
-        .execute(&pool).await.unwrap();
-    
-        sqlx::query(
-            "INSERT INTO files (id, user_id, filename, filepath, size)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("file_1")
-        .bind("user_1")
-        .bind("testfile.txt")
-        .bind("/path/to/testfile.txt")
-        .bind(10)
-        .execute(&pool).await.unwrap();
-    
-        let req = test::TestRequest::get()
-            .uri("/files")
-            .insert_header(("Authorization", get_mock_token("user_1")))
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 200);
-    }
-    
-    #[actix_rt::test]
-    async fn test_get_file_by_id_success() {
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .service(web::resource("/file/{id}").route(web::get().to(get_file_by_id)))
-        ).await;
-    
-        // Insert user and file into the database
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, allocated_space, used_space)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("user_1")
-        .bind("testuser")
-        .bind(bcrypt::hash("password123", bcrypt::DEFAULT_COST).unwrap())
-        .bind(100)
-        .bind(0)
-        .execute(&pool).await.unwrap();
-    
-        sqlx::query(
-            "INSERT INTO files (id, user_id, filename, filepath, size)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("file_1")
-        .bind("user_1")
-        .bind("testfile.txt")
-        .bind("/path/to/testfile.txt")
-        .bind(10)
-        .execute(&pool).await.unwrap();
-    
-        let req = test::TestRequest::get()
-            .uri("/file/file_1")
-            .insert_header(("Authorization", get_mock_token("user_1")))
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 200);
-    }
-    
-    #[actix_rt::test]
-    async fn test_delete_file_success() {
-        let pool = setup_test_db().await;
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool.clone()))
-                .service(web::resource("/file/{id}").route(web::delete().to(delete_file)))
-        ).await;
-    
-        // Insert user and file into the database
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, allocated_space, used_space)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("user_1")
-        .bind("testuser")
-        .bind(bcrypt::hash("password123", bcrypt::DEFAULT_COST).unwrap())
-        .bind(100)
-        .bind(0)
-        .execute(&pool).await.unwrap();
-    
-        sqlx::query(
-            "INSERT INTO files (id, user_id, filename, filepath, size)
-            VALUES (?, ?, ?, ?, ?)"
-        ).bind("file_1")
-        .bind("user_1")
-        .bind("testfile.txt")
-        .bind("/path/to/testfile.txt")
-        .bind(10)
-        .execute(&pool).await.unwrap();
-    
-        let req = test::TestRequest::delete()
-            .uri("/file/file_1")
-            .insert_header(("Authorization", get_mock_token("user_1")))
-            .to_request();
-    
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 200);
-    }
-}
-
