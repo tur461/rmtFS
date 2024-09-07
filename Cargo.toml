@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 actix-web = "4"
+actix-service = "2.0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 jsonwebtoken = "8.1"
@@ -13,11 +14,18 @@ bcrypt = "0.10"
 actix-rt = "2.5.0"
 actix-session = "0.6"
 actix-identity = "0.4"
-env_logger = "0.9"
 futures = "0.3"
 uuid = { version="1.0", features = ["v4"] }
-sqlx = { version = "0.8.2", features = ["sqlite"] }
+sqlx = { version = "0.8.2", features = ["sqlite", "runtime-tokio"] }
 dotenv = "0.15.0"
+actix-web-httpauth = "0.7"
+env_logger = "0.11"
+log = "0.4"
+actix-cors = "0.7.0"
+
+[dependencies.chrono]
+version = "0.4.26"
+features = ["serde"]
 
 [dev-dependencies]
 actix-web = "4"

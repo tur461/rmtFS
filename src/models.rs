@@ -29,6 +29,7 @@ pub async fn initialize_db(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             user_id TEXT,
             filename TEXT NOT NULL,
             size INTEGER NOT NULL,
+            filepath TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )"
     )
@@ -53,16 +54,33 @@ pub async fn create_user(pool: &Pool<Sqlite>, user: &User) -> Result<(), sqlx::E
     Ok(())
 }
 
+pub async fn get_user_by_id(pool: &Pool<Sqlite>, id: &str) -> Result<User, sqlx::Error> {
+    let query = "SELECT id, username, password_hash, allocated_space, used_space FROM users WHERE id = ?";
+
+    let row = sqlx::query(query)
+        .bind(id) // Bind the parameter
+        .fetch_one(pool) // Fetch a single row
+        .await?;
+
+    let user = User {
+        id: row.get("id"),
+        username: row.get("username"),
+        password_hash: row.get("password_hash"),
+        allocated_space: row.get::<i32, _>("allocated_space") as usize,
+        used_space: row.get::<i32, _>("used_space") as usize,
+    };
+
+    Ok(user)
+}
+
 pub async fn get_user_by_username(pool: &Pool<Sqlite>, username: &str) -> Result<User, sqlx::Error> {
     let query = "SELECT id, username, password_hash, allocated_space, used_space FROM users WHERE username = ?";
 
-    // Execute the query and get a single row
     let row = sqlx::query(query)
         .bind(username) // Bind the parameter
         .fetch_one(pool) // Fetch a single row
         .await?;
 
-    // Extract the fields from the row and map them to the User struct
     let user = User {
         id: row.get("id"),
         username: row.get("username"),
