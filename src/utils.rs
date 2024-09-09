@@ -1,4 +1,5 @@
 use std::fs;
+use chrono::Utc;
 use infer::Infer;
 
 use crate::constants::{
@@ -66,4 +67,22 @@ pub fn detect_file_type(file_path: &str) -> Option<String> {
     }
     log::info!("## Mime: NONE");
     None
+}
+
+pub fn add_tstamp(fname: &str) -> String {
+    let ts = Utc::now().timestamp();
+    match fname.rsplit_once('.') {
+        Some((name, ext)) => format!("{}_-_ts__mizzle_-_{}.{}", name, ts, ext),
+        None => format!("{}_-_ts__mizzle_-_{}", fname, ts),
+    }
+}
+
+pub fn strip_tstamp(fname: &str) -> String {
+    match fname.rsplit_once("_-_ts__mizzle_-_") {
+        Some((name_no_ext, ts_ext)) => match ts_ext.rsplit_once('.') {
+            Some((_, ext)) => format!("{}.{}", name_no_ext, ext),
+            None => name_no_ext.to_string(),
+        },
+        None => fname.to_string(),
+    }
 }

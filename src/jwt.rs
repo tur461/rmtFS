@@ -12,7 +12,7 @@ use actix_web::{
     http::header::HeaderValue,
 };
 use chrono::Utc;
-use crate::constants;
+use crate::constants::{self, ONE_WEEK};
 use actix_service::forward_ready;
 use futures::future::{ok, Ready, LocalBoxFuture,};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation, errors::Error};
@@ -21,8 +21,6 @@ use actix_web_httpauth::extractors::bearer::{BearerAuth, Config};
 use actix_web_httpauth::extractors::AuthenticationError;
 
 use log::{info, error};
-
-const ONE_WEEK: usize = 60 * 60 * 24 * 7;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -46,11 +44,15 @@ impl ResponseBody {
     }
 }
 
-pub struct JWT;
+pub struct JWT{ secret: String }
 
 impl JWT {
 
-    pub fn create_jwt(user_id: String, secret: &str) -> Result<String, Error> {
+    pub fn new(s: &str) -> Self {
+        Self { secret: s.to_string()}
+    }
+
+    pub fn create_jwt(&self, user_id: String) -> Result<String, Error> {
         let now = (Utc::now().timestamp_nanos_opt().unwrap() / 1_000_000_000) as usize; // nano to sec
         let expiry = now + ONE_WEEK;
         let claims = Claims {
@@ -58,56 +60,57 @@ impl JWT {
             exp: expiry,
             sub: user_id,
         };
-        info!("Creating with: claims: {:?}, secret: {}", claims, secret);
+        info!("Creating with: claims: {:?}, secret: {}", claims, self.secret);
         encode(
             &Header::default(), 
             &claims, 
-            &EncodingKey::from_secret(secret.as_ref())
+            &EncodingKey::from_secret(self.secret.as_ref())
         )
     }
     
-    pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, Error> {
-        info!("Verifying with: token: {}, secret: {}", token, secret);
+    pub fn verify_jwt(&self, token: &str) -> Result<Claims, Error> {
+        info!("Verifying with: token: {}, secret: {}", token, self.secret);
         decode::<Claims>(
             token, 
-            &DecodingKey::from_secret(secret.as_ref()), 
+            &DecodingKey::from_secret(self.secret.as_ref()), 
             &Validation::default()
         ).map(|data| {
             info!("## claims: {:?}", data.claims);
             data.claims
         })
     }
-}
 
-
-pub fn jwt_validator(
-    req: ServiceRequest, 
-    auth: BearerAuth,
-    secret: &str
-) -> Result<ServiceRequest, (AxError, ServiceRequest)> {
-    if req.path() == "/register" {
-        log::debug!("register req");
-        return Ok(req);
-    }
-
-    log::debug!("req: {}", req.path());
+    pub fn jwt_validator(
+        &self,
+        req: ServiceRequest, 
+        auth: BearerAuth
+    ) -> Result<ServiceRequest, (AxError, ServiceRequest)> {
+        if req.path() == "/register" {
+            log::debug!("register req");
+            return Ok(req);
+        }
     
-    match JWT::verify_jwt(auth.token(), secret) {
-        Ok(claims) => {
-            // Add claims to request extensions
-            req.extensions_mut().insert(claims);
-            Ok(req)
-        }
-        Err(_) => {
-            let config = req.app_data::<Config>()
-                .cloned()
-                .unwrap_or_default()
-                .scope("urn:example:channel=HBO&urn:example:rating=G,PG-13");
-                
-            Err((AuthenticationError::from(config).into(), req))
+        log::debug!("req: {}", req.path());
+        
+        match self.verify_jwt(auth.token()) {
+            Ok(claims) => {
+                // Add claims to request extensions
+                req.extensions_mut().insert(claims);
+                Ok(req)
+            }
+            Err(_) => {
+                let config = req.app_data::<Config>()
+                    .cloned()
+                    .unwrap_or_default()
+                    .scope("urn:example:channel=HBO&urn:example:rating=G,PG-13");
+                    
+                Err((AuthenticationError::from(config).into(), req))
+            }
         }
     }
 }
+
+
 
 
 pub struct Authentication;
@@ -125,11 +128,13 @@ where
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ok(AuthenticationMiddleware { service })
+        let jwt = JWT::new(include_str!("..\\secret.key"));
+        ok(AuthenticationMiddleware { jwt, service})
     }
 }
 
 pub struct AuthenticationMiddleware<S> {
+    jwt: JWT,
     service: S,
 }
 
@@ -169,15 +174,11 @@ where
 
         if !authenticate_pass {
             if let Some(authen_header) = req.headers().get(constants::AUTHORIZATION) {
-                info!("Parsing authorization header...");
                 if let Ok(authen_str) = authen_header.to_str() {
                     if authen_str.starts_with("bearer") || authen_str.starts_with("Bearer") {
-                        info!("Parsing token...");
                         let token = authen_str[6..authen_str.len()].trim();
-                        info!("Token: {}", token);
-                        let vres = JWT::verify_jwt(token, include_str!("..\\secret.key"));
+                        let vres = self.jwt.verify_jwt(token);
                         if vres.is_ok() {
-                            info!("Valid token");
                             authenticate_pass = true;
                         } else {
                             error!("Invalid token: {:?}", vres.unwrap_err());

@@ -31,10 +31,9 @@ async fn main() -> std::io::Result<()> {
         .connect(&sqlite_db_file)
         .await
         .expect("create pool");
-    let r = initialize_db(&pool).await;
-    if r.is_err() {
-        let error = r.unwrap_err();
-        panic!("Unable to initialize the db. Err: {:?}", error);
+    
+    if let Err(e) = initialize_db(&pool).await {
+        panic!("Unable to initialize the db. Err: {:?}", e);
     }
     HttpServer::new(move || {
         App::new()

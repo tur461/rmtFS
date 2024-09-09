@@ -1,3 +1,7 @@
+
+pub const ONE_WEEK: usize = 60 * 60 * 24 * 7;
+
+
 // Messages
 pub const MESSAGE_OK: &str = "ok";
 pub const MESSAGE_CAN_NOT_FETCH_DATA: &str = "Can not fetch data";

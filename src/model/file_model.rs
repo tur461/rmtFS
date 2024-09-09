@@ -1,4 +1,3 @@
-use sqlx::{Pool, Sqlite};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,5 +22,3 @@ pub struct FileReq {
     #[serde(default)]
     pub size: u64,
 }
-
-// todo: Add file-related functions here

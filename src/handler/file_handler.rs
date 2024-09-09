@@ -1,11 +1,8 @@
-// src/handlers/file_handler.rs
-
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
-// use anyhow::Ok;
 use crate::constants::PATH_TO_FILES;
 use crate::repo::{FileRepo, UserRepo};
 use crate::model::File;
-use crate::utils::{detect_file_type, get_thumb_path};
+use crate::utils::{add_tstamp, detect_file_type, get_thumb_path, strip_tstamp};
 use sqlx::sqlite::SqlitePool;
 use actix_files::NamedFile;
 use uuid::Uuid;
@@ -39,7 +36,7 @@ impl FileHandler {
         match file_repo.get_file_by_id(&file_id).await {
             Ok(file) => {
                 let filepath: String = file.filepath;
-                let filename: String = file.filename;
+                let filename: String = strip_tstamp(&file.filename);
                 
                 if !std::path::Path::new(&filepath).exists() {
                     return HttpResponse::NotFound().body("File not found on disk");
@@ -86,9 +83,8 @@ impl FileHandler {
                 while let Ok(Some(mut field)) = payload.try_next().await {
                     let content_disposition = field.content_disposition().unwrap();
                     filename = content_disposition.get_filename().unwrap().to_string();
-                    let file_id = Uuid::new_v4().to_string();
                     log::info!("## GOT a file: {}", filename);
-
+                    filename = add_tstamp(&filename);
                     let user_dir = format!("{}/{}", PATH_TO_FILES, user_id);
                     if !std::path::Path::new(&user_dir).exists() {
                         fs::create_dir_all(&user_dir).unwrap();

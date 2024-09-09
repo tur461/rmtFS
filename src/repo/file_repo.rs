@@ -1,10 +1,8 @@
 use sqlx::{Row, sqlite::SqlitePool};
-use crate::model::File;
+use crate::{model::File, utils::strip_tstamp};
 use anyhow::Result;
 use std::fs;
 use base64::{encode as base64_encode};
-use futures_util::TryStreamExt as _;
-use futures::Stream;
 
 pub struct FileRepo<'a> {
     pool: &'a SqlitePool,
@@ -26,7 +24,8 @@ impl<'a> FileRepo<'a> {
             .map(|row| {
                 let id: String = row.try_get("id").unwrap();
                 let user_id: String = row.try_get("user_id").unwrap();
-                let filename: String = row.try_get("filename").unwrap();
+                let mut filename: String = row.try_get("filename").unwrap();
+                filename = strip_tstamp(&filename);
                 let filepath: String = row.try_get("filepath").unwrap();
                 let size: u64 = row.get::<u64, _>("size") as u64;
                 let thumb_path: String = row.try_get("thumbnail").unwrap();

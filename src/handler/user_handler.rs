@@ -74,7 +74,8 @@ impl UserHandler {
             match user_repo.get_user_by_username(&creds.username).await {
                 Ok(user) => {
                     if verify(&creds.password, &user.password_hash).unwrap() {
-                        let token = JWT::create_jwt(user.id, &secret).unwrap();
+                        let jwt = JWT::new(&secret);
+                        let token = jwt.create_jwt(user.id).unwrap();
                         HttpResponse::Ok().json(token)
                     } else {
                         HttpResponse::Unauthorized().body("Invalid username or password")
