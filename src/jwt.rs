@@ -46,33 +46,39 @@ impl ResponseBody {
     }
 }
 
-pub fn create_jwt(user_id: String, secret: &str) -> Result<String, Error> {
-    let now = (Utc::now().timestamp_nanos_opt().unwrap() / 1_000_000_000) as usize; // nano to sec
-    let expiry = now + ONE_WEEK;
-    let claims = Claims {
-        iat: now,
-        exp: expiry,
-        sub: user_id,
-    };
-    info!("Creating with: claims: {:?}, secret: {}", claims, secret);
-    encode(
-        &Header::default(), 
-        &claims, 
-        &EncodingKey::from_secret(secret.as_ref())
-    )
+pub struct JWT;
+
+impl JWT {
+
+    pub fn create_jwt(user_id: String, secret: &str) -> Result<String, Error> {
+        let now = (Utc::now().timestamp_nanos_opt().unwrap() / 1_000_000_000) as usize; // nano to sec
+        let expiry = now + ONE_WEEK;
+        let claims = Claims {
+            iat: now,
+            exp: expiry,
+            sub: user_id,
+        };
+        info!("Creating with: claims: {:?}, secret: {}", claims, secret);
+        encode(
+            &Header::default(), 
+            &claims, 
+            &EncodingKey::from_secret(secret.as_ref())
+        )
+    }
+    
+    pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, Error> {
+        info!("Verifying with: token: {}, secret: {}", token, secret);
+        decode::<Claims>(
+            token, 
+            &DecodingKey::from_secret(secret.as_ref()), 
+            &Validation::default()
+        ).map(|data| {
+            info!("## claims: {:?}", data.claims);
+            data.claims
+        })
+    }
 }
 
-pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, Error> {
-    info!("Verifying with: token: {}, secret: {}", token, secret);
-    decode::<Claims>(
-        token, 
-        &DecodingKey::from_secret(secret.as_ref()), 
-        &Validation::default()
-    ).map(|data| {
-        info!("## claims: {:?}", data.claims);
-        data.claims
-    })
-}
 
 pub fn jwt_validator(
     req: ServiceRequest, 
@@ -86,7 +92,7 @@ pub fn jwt_validator(
 
     log::debug!("req: {}", req.path());
     
-    match verify_jwt(auth.token(), secret) {
+    match JWT::verify_jwt(auth.token(), secret) {
         Ok(claims) => {
             // Add claims to request extensions
             req.extensions_mut().insert(claims);
@@ -169,7 +175,7 @@ where
                         info!("Parsing token...");
                         let token = authen_str[6..authen_str.len()].trim();
                         info!("Token: {}", token);
-                        let vres = verify_jwt(token, include_str!("..\\secret.key"));
+                        let vres = JWT::verify_jwt(token, include_str!("..\\secret.key"));
                         if vres.is_ok() {
                             info!("Valid token");
                             authenticate_pass = true;
