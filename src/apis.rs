@@ -21,6 +21,7 @@ use std::io::Write;
 use actix_files::NamedFile;
 use crate::constants::PATH_TO_FILES;
 use base64::{encode as base64_encode};
+use sysinfo::{Disks, System};
 use crate::utils::{detect_file_type, get_thumb_path};
 use futures_util::TryStreamExt as _;
 
@@ -34,7 +35,7 @@ pub struct UserLogin {
 pub struct RegisterRequest {
     username: String,
     password: String,
-    allocated_space: usize, // Space in MB
+    allocated_space: u64, // Space in Bytes
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -43,7 +44,7 @@ pub struct File {
     pub user_id: String,
     pub filename: String,
     pub filepath: String,
-    pub size: usize,
+    pub size: u64,
     thumbnail: Option<String>
 }
 
@@ -57,7 +58,7 @@ pub struct FileReq {
     #[serde(default)]
     pub filepath: String,
     #[serde(default)]
-    pub size: usize,
+    pub size: u64,
 }
 
 pub async fn register(
@@ -65,13 +66,42 @@ pub async fn register(
     pool: web::Data<SqlitePool>
 ) -> impl Responder {
     log::info!("called");
+    let disks = Disks::new_with_refreshed_list();
+    log::info!("### DISK INFO ###");
+    let cur_dir = std::env::current_dir().unwrap();
+    log::info!("Cur folder: {}", cur_dir.display());
+    let cur_disk = disks.iter().find(|disk| cur_dir.starts_with(disk.mount_point()));
+    let mut av_space = 0;
+    match cur_disk {
+        Some(disk) => {
+            av_space = disk.available_space();
+            log::info!("Disk mount point: {}", disk.mount_point().display());
+            log::info!("Available space: {} bytes", av_space);
+            log::info!("Total space: {} bytes", disk.total_space());
+
+        }
+        None => {
+            log::info!("No disk found for the current directory.");
+            return HttpResponse::InternalServerError().json("Space issue.");
+        }
+    }
+
+    let space_needed = user_data.allocated_space;
+
+    if space_needed > av_space {
+        // handle this scenario etiher by:
+        // 1. returning error
+        // 2. connecting to another instance runing somewhere else, sending user details
+        return HttpResponse::InsufficientStorage().json("Not enough storage available on server.");
+    }
+
     let password_hash = hash(&user_data.password, DEFAULT_COST).unwrap();
 
     let new_user = User {
         id: Uuid::new_v4().to_string(),
         username: user_data.username.clone(),
         password_hash,
-        allocated_space: user_data.allocated_space,
+        allocated_space: space_needed,
         used_space: 0,
     };
 
@@ -92,10 +122,10 @@ pub async fn login(
                 let token = create_jwt(user.id, &secret).unwrap();
                 HttpResponse::Ok().json(token)
             } else {
-                HttpResponse::Unauthorized().body("Invalid password")
+                HttpResponse::Unauthorized().body("Invalid username or password")
             }
         }
-        Err(_) => HttpResponse::Unauthorized().body("Invalid username"),
+        Err(_) => HttpResponse::Unauthorized().body("Invalid username or password"),
     }
 }
 
@@ -129,7 +159,7 @@ pub async fn get_files(
                 let user_id: String = row.try_get("user_id").unwrap();
                 let filename: String = row.try_get("filename").unwrap();
                 let filepath: String = row.try_get("filepath").unwrap();
-                let size: usize = row.get::<i32, _>("size") as usize;
+                let size: u64 = row.get::<u64, _>("size") as u64;
                 let thumb_path: String = row.try_get("thumbnail").unwrap();
 
                 let thumb_data = if std::path::Path::new(&thumb_path).exists() {
@@ -218,7 +248,7 @@ pub async fn create_file(
 
     let mut filepath = String::new();
     let mut filename = String::new();
-    let mut file_size: usize = 0;
+    let mut file_size: u64 = 0;
 
     while let Ok(Some(mut field)) = payload.try_next().await {
         let content_disposition = field.content_disposition().unwrap();
@@ -238,7 +268,7 @@ pub async fn create_file(
 
         while let Some(chunk) = field.try_next().await.unwrap() {
             log::info!("## Chunk: {:?}", chunk.len());
-            file_size += chunk.len();
+            file_size += chunk.len() as u64;
             f = web::block(move || f.write_all(&chunk).map(|_| f)).await.unwrap().unwrap();
         }
 
@@ -334,7 +364,7 @@ pub async fn delete_file(
     match file_row {
         Ok(Some(file)) => {
             let filepath: String = file.try_get("filepath").unwrap();
-            let file_size: usize = file.get::<i32, _>("size") as usize;
+            let file_size: u64 = file.get::<u64, _>("size") as u64;
 
             if let Err(_) = fs::remove_file(&filepath) {
                 return HttpResponse::InternalServerError().body("Error deleting file from disk");

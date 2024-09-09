@@ -6,8 +6,8 @@ pub struct User {
     pub id: String,
     pub username: String,
     pub password_hash: String,
-    pub allocated_space: usize, // in MB
-    pub used_space: usize, // in MB
+    pub allocated_space: u64, // in MB
+    pub used_space: u64, // in MB
 }
 
 pub async fn initialize_db(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
@@ -67,8 +67,8 @@ pub async fn get_user_by_id(pool: &Pool<Sqlite>, id: &str) -> Result<User, sqlx:
         id: row.get("id"),
         username: row.get("username"),
         password_hash: row.get("password_hash"),
-        allocated_space: row.get::<i32, _>("allocated_space") as usize,
-        used_space: row.get::<i32, _>("used_space") as usize,
+        allocated_space: row.get::<u64, _>("allocated_space") as u64,
+        used_space: row.get::<u64, _>("used_space") as u64,
     };
 
     Ok(user)
@@ -86,14 +86,14 @@ pub async fn get_user_by_username(pool: &Pool<Sqlite>, username: &str) -> Result
         id: row.get("id"),
         username: row.get("username"),
         password_hash: row.get("password_hash"),
-        allocated_space: row.get::<i32, _>("allocated_space") as usize,
-        used_space: row.get::<i32, _>("used_space") as usize,
+        allocated_space: row.get::<u64, _>("allocated_space") as u64,
+        used_space: row.get::<u64, _>("used_space") as u64,
     };
 
     Ok(user)
 }
 
-pub async fn update_user_space(pool: &Pool<Sqlite>, user_id: &str, used_space: usize) -> Result<(), sqlx::Error> {
+pub async fn update_user_space(pool: &Pool<Sqlite>, user_id: &str, used_space: u64) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE users SET used_space = ? WHERE id = ?"
     )
