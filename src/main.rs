@@ -17,14 +17,14 @@ use db::initialize_db;
 use jwt::Authentication;
 use sqlx::sqlite::SqlitePoolOptions;
 use handler::{FileHandler, UserHandler};
-use actix_web::{web, App, HttpServer, http::header};
+use actix_web::{http::header, web::{self, head}, App, HttpServer};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
     env_logger::init_from_env(Env::default().default_filter_or("info"));
 
-    let jwt_secret = include_str!("..\\secret.key");
+    let jwt_secret = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/secret.key"));
     let sqlite_db_file = env::var("SQLITE_DB_URL").expect("SQLITE_DB_URL");
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -45,7 +45,10 @@ async fn main() -> std::io::Result<()> {
                     .allow_any_origin()
                     .allow_any_method()
                     .allow_any_header()
-                    .expose_headers(vec![header::CONTENT_DISPOSITION])
+                    .expose_headers(vec![
+                        header::CONTENT_DISPOSITION, 
+                        header::HeaderName::from_static("x-file-iv")
+                    ])
                     .supports_credentials()
                     .max_age(3600),
             )

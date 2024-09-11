@@ -14,7 +14,7 @@ impl<'a> FileRepo<'a> {
     }
 
     pub async fn get_files_by_user_id(&self, user_id: &str) -> Result<Vec<File>> {
-        let rows = sqlx::query("SELECT id, user_id, filename, filepath, size, thumbnail FROM files WHERE user_id = ?")
+        let rows = sqlx::query("SELECT id, ivector, user_id, filename, filepath, size, thumbnail FROM files WHERE user_id = ?")
             .bind(user_id)
             .fetch_all(self.pool)
             .await?;
@@ -23,6 +23,7 @@ impl<'a> FileRepo<'a> {
             .into_iter()
             .map(|row| {
                 let id: String = row.try_get("id").unwrap();
+                let ivector: String = row.try_get("ivector").unwrap();
                 let user_id: String = row.try_get("user_id").unwrap();
                 let mut filename: String = row.try_get("filename").unwrap();
                 filename = strip_tstamp(&filename);
@@ -38,7 +39,7 @@ impl<'a> FileRepo<'a> {
                     String::from("")
                 };
                 File {
-                    id, user_id, filename, filepath, size, thumbnail
+                    id, ivector, user_id, filename, filepath, size, thumbnail
                 }
             })
             .collect();
@@ -47,13 +48,14 @@ impl<'a> FileRepo<'a> {
     }
 
     pub async fn get_file_by_id(&self, file_id: &str) -> Result<File, anyhow::Error> {
-        let row = sqlx::query("SELECT id, user_id, filename, filepath, size, thumbnail FROM files WHERE id = ?")
+        let row = sqlx::query("SELECT id, ivector, user_id, filename, filepath, size, thumbnail FROM files WHERE id = ?")
         .bind(file_id)
         .fetch_optional(self.pool)
         .await?;
 
         if let Some(row) = row {
             let id: String = row.try_get("id").unwrap();
+            let ivector: String = row.try_get("ivector").unwrap();
             let user_id: String = row.try_get("user_id").unwrap();
             let filename: String = row.try_get("filename").unwrap();
             let filepath: String = row.try_get("filepath").unwrap();
@@ -70,7 +72,7 @@ impl<'a> FileRepo<'a> {
             };
     
             let file = File {
-                id, user_id, filename, filepath, size, thumbnail
+                id, ivector, user_id, filename, filepath, size, thumbnail
             };
             Ok(file)
         } else {
@@ -80,8 +82,10 @@ impl<'a> FileRepo<'a> {
     }
 
     pub async fn create_file(&self, file: &File) -> Result<()> {
-        sqlx::query("INSERT INTO files (id, user_id, filename, filepath, size, thumbnail) VALUES (?, ?, ?, ?, ?, ?)")
+        log::warn!("Saving File: {:#?}", file);
+        sqlx::query("INSERT INTO files (id, ivector, user_id, filename, filepath, size, thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(&file.id)
+            .bind(&file.ivector)
             .bind(&file.user_id)
             .bind(&file.filename)
             .bind(&file.filepath)

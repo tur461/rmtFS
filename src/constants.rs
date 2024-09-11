@@ -48,6 +48,7 @@ pub const MIME_DOC: &str = "application/vnd.openxmlformats-officedocument.wordpr
 
 // use bin.png for these
 pub const MIME_OLE: &str = "application/x-ole-storage";
+pub const MIME_LEX: &str = "application/x-executable";
 
 // archives -- arc.png
 pub const MIME_DEB: &str = "application/vnd.debian.binary-package";

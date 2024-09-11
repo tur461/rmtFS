@@ -16,6 +16,7 @@ pub async fn initialize_db(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS files (
             id TEXT PRIMARY KEY,
+            ivector TEXT NOT NULL,
             user_id TEXT,
             filename TEXT NOT NULL,
             size INTEGER NOT NULL,

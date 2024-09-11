@@ -1,8 +1,23 @@
-use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use actix_web::{
+    web, 
+    http::header::{ 
+        DispositionType, 
+        DispositionParam,
+        ContentDisposition,
+    }, 
+    HttpRequest, 
+    HttpResponse, 
+    Responder
+};
 use crate::constants::PATH_TO_FILES;
 use crate::repo::{FileRepo, UserRepo};
 use crate::model::File;
-use crate::utils::{add_tstamp, detect_file_type, get_thumb_path, strip_tstamp};
+use crate::utils::{
+    add_tstamp, 
+    detect_file_type, 
+    get_thumb_path, 
+    strip_tstamp
+};
 use sqlx::sqlite::SqlitePool;
 use actix_files::NamedFile;
 use uuid::Uuid;
@@ -46,17 +61,23 @@ impl FileHandler {
                 
                 match NamedFile::open(filepath) {
                     Ok(named_file) => {
-                        named_file
+                        let content_disposition = ContentDisposition {
+                            disposition: DispositionType::Attachment,
+                            parameters: vec![
+                                DispositionParam::Filename(filename)
+                            ],
+                        };
+                        let mut response = named_file
                             .use_last_modified(true)
-                            .set_content_disposition(
-                                actix_web::http::header::ContentDisposition {
-                                    disposition: actix_web::http::header::DispositionType::Attachment,
-                                    parameters: vec![
-                                        actix_web::http::header::DispositionParam::Filename(filename)
-                                    ]
-                                }
-                            )
-                            .into_response(&req)
+                            .set_content_disposition(content_disposition)
+                            .into_response(&req);
+                        response.headers_mut().insert(
+                            "x-file-iv".parse().unwrap(),
+                            file.ivector.parse().unwrap()
+                        );
+                        
+                        response
+                        
                     },
                     Err(_) => HttpResponse::InternalServerError().body("Error opening file"),
                 }
@@ -76,32 +97,53 @@ impl FileHandler {
             Ok(user) => {
                 let (allocated_space, used_space) = (user.allocated_space, user.used_space);
 
+                let mut file_size: u64 = 0;
+                let mut ivector: String = String::new();
                 let mut filepath = String::new();
                 let mut filename = String::new();
-                let mut file_size: u64 = 0;
-
                 while let Ok(Some(mut field)) = payload.try_next().await {
                     let content_disposition = field.content_disposition().unwrap();
-                    filename = content_disposition.get_filename().unwrap().to_string();
-                    log::info!("## GOT a file: {}", filename);
-                    filename = add_tstamp(&filename);
-                    let user_dir = format!("{}/{}", PATH_TO_FILES, user_id);
-                    if !std::path::Path::new(&user_dir).exists() {
-                        fs::create_dir_all(&user_dir).unwrap();
+                    let field_name = content_disposition.get_name().unwrap();
+                    if field_name == "file" {
+                        log::info!("Field: FILE");
+                        filename = content_disposition.get_filename().unwrap().to_string();
+                        log::info!("## GOT a file: {}", filename);
+                        filename = add_tstamp(&filename);
+                        let user_dir = format!("{}/{}", PATH_TO_FILES, user_id);
+                        if !std::path::Path::new(&user_dir).exists() {
+                            fs::create_dir_all(&user_dir).unwrap();
+                        }
+
+                        
+
+                        filepath = format!("{}/{}", user_dir, filename);
+                        let fp = filepath.clone();
+                        let mut f = web::block(move || std::fs::File::create(&fp)).await.unwrap().unwrap();
+
+                        while let Some(chunk) = field.try_next().await.unwrap() {
+                            log::info!("## Chunk: {:?}", chunk.len());
+                            file_size += chunk.len() as u64;
+                            f = web::block(move || f.write_all(&chunk).map(|_| f)).await.unwrap().unwrap();
+                        }
+
+
+                    } else if field_name == "ivector" {
+                        
+                        let v = match field.try_fold(Vec::new(), |mut acc, chunk| {
+                            acc.extend_from_slice(&chunk);
+                            async move { Ok(acc) } // Return Result
+                        }).await {
+                            Ok(iv_data) => Some(iv_data),
+                            Err(e) => {
+                                log::error!("Failed to extract IV: {}", e);
+                                return HttpResponse::InternalServerError().finish();
+                            }
+                        }.unwrap_or_default();
+                        
+                        ivector = base64::encode(&v);
+                        log::info!("IV: {}", ivector);
                     }
-
-                    filepath = format!("{}/{}", user_dir, filename);
-                    let fp = filepath.clone();
-                    let mut f = web::block(move || std::fs::File::create(&fp)).await.unwrap().unwrap();
-
-                    while let Some(chunk) = field.try_next().await.unwrap() {
-                        log::info!("## Chunk: {:?}", chunk.len());
-                        file_size += chunk.len() as u64;
-                        f = web::block(move || f.write_all(&chunk).map(|_| f)).await.unwrap().unwrap();
-                    }
-
-
-                }
+                }  
 
                 if used_space + file_size > allocated_space {
                     fs::remove_file(filepath).unwrap(); // rm file if space is insufficient
@@ -114,7 +156,8 @@ impl FileHandler {
                 let file_repo = FileRepo::new(pool.get_ref());
 
                 match file_repo.create_file(&File { 
-                    filename, 
+                    filename,
+                    ivector,
                     size: file_size, 
                     thumbnail: thumb_path,
                     user_id: user_id.clone(), 
@@ -129,7 +172,8 @@ impl FileHandler {
 
                         HttpResponse::Created().json("File uploaded successfully")
                     },
-                    Err(_) => {
+                    Err(e) => {
+                        log::error!("Saving File: {}", e);
                         fs::remove_file(filepath).unwrap(); // rm file if DB insertion fails
                         HttpResponse::InternalServerError().body("Error saving file metadata")
                     }

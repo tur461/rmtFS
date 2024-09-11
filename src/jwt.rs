@@ -128,7 +128,7 @@ where
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        let jwt = JWT::new(include_str!("..\\secret.key"));
+        let jwt = JWT::new(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/secret.key")));
         ok(AuthenticationMiddleware { jwt, service})
     }
 }
